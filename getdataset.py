@@ -59,6 +59,7 @@ def dock_fragment(frag, target, docking_dir, mol2_path, center_coords, box_sizes
     try:
         cleaned_mol = cleanup_molecule_rdkit(frag)
         if cleaned_mol is None:
+            logging.warning(f"Skipping docking for fragment {frag} due to cleanup failure.")
             return None, float('inf')
 
         cleaned_smiles = Chem.MolToSmiles(cleaned_mol)
@@ -111,6 +112,7 @@ def process_single_drug(smiles, target_name, docking_dir, mol2_path, center_coor
     try:
         fragments = fragment_molecule_recaps(smiles)
         if not fragments:
+            logging.warning(f"No fragments obtained for SMILES {smiles}.")
             return None
 
         best_fragment, best_score = dock_fragments(fragments, target_name, docking_dir, mol2_path, center_coords, box_sizes)
