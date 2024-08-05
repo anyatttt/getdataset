@@ -5,8 +5,7 @@ from tqdm import tqdm
 import pandas as pd
 from dockstring import load_target
 import argparse
-from concurrent.futures import ProcessPoolExecutor
-
+import concurrent.futures
 
 def fragment_molecule_recaps(smiles):
     try:
@@ -25,7 +24,6 @@ def fragment_molecule_recaps(smiles):
                     # Properly handle wildcard atoms
                     cleaned_smile = smile.replace('*', 'C')  # Replace wildcard with carbon
                     fragments.append(cleaned_smile)
-                    print(f"Fragment SMILES: {cleaned_smile}")
             else:
                 print("No leaves found in the Recap tree.")
         else:
@@ -54,11 +52,24 @@ def cleanup_molecule_rdkit(smiles):
         print(f"Error during molecule cleanup: {e}")
         return None
 
+def dock_fragment(frag, target, docking_dir, mol2_path, center_coords, box_sizes):
+    try:
+        cleaned_mol = cleanup_molecule_rdkit(frag)
+        if cleaned_mol is None:
+            return None, float('inf')
+
+        cleaned_smiles = Chem.MolToSmiles(cleaned_mol)
+        score, __ = target.dock(cleaned_smiles)
+
+        return cleaned_smiles, score
+    except Exception as e:
+        print(f"Error docking fragment {frag}: {e}")
+        return None, float('inf')
+
 def dock_fragments(fragments, target_name, docking_dir, mol2_path, center_coords, box_sizes):
     os.makedirs(docking_dir, exist_ok=True)
 
     convert_command = f"obabel -imol2 {mol2_path} -opdbqt -O {os.path.join(docking_dir, target_name + '_target.pdbqt')} -xr"
-    print(f"Running command: {convert_command}")
     os.system(convert_command)
 
     conf_path = os.path.join(docking_dir, target_name + '_conf.txt')
@@ -76,61 +87,40 @@ size_z = {box_sizes[2]}""")
     best_score = float('inf')  # Initialize to positive infinity
     best_fragment = None
 
-    for frag in fragments:
-        try:
-            cleaned_mol = cleanup_molecule_rdkit(frag)
-            if cleaned_mol is None:
-                continue  # Skip docking if cleaning failed
+    with concurrent.futures.ProcessPoolExecutor() as executor:
+        futures = [executor.submit(dock_fragment, frag, target, docking_dir, mol2_path, center_coords, box_sizes) for frag in fragments]
 
-            cleaned_smiles = Chem.MolToSmiles(cleaned_mol)
-            score, __ = target.dock(cleaned_smiles)
-
-            if score < best_score:  # Update condition for lower scores being better
+        for future in tqdm(concurrent.futures.as_completed(futures), total=len(futures)):
+            cleaned_smiles, score = future.result()
+            if score < best_score:
                 best_score = score
                 best_fragment = cleaned_smiles
-        except Exception as e:
-            print(f"Error docking fragment {frag}: {e}")
 
     return best_fragment, best_score
 
-def process_row(row, target_name, docking_dir, mol2_path, center_coords, box_sizes):
-    smiles = row.get('SMILES', None)
-    if smiles is None:
-        return None
-
+def process_single_drug(smiles, target_name, docking_dir, mol2_path, center_coords, box_sizes):
     fragments = fragment_molecule_recaps(smiles)
     if not fragments:
         return None
 
     best_fragment, best_score = dock_fragments(fragments, target_name, docking_dir, mol2_path, center_coords, box_sizes)
     if best_fragment is not None:
-        return {'Name': row['name'], 'SMILES': smiles, 'BestFragment': best_fragment, 'BestScore': best_score}
-    
+        return {'SMILES': smiles, 'BestFragment': best_fragment, 'BestScore': best_score}
+
     return None
 
-def process_batch(batch, target_name, docking_dir, mol2_path, center_coords, box_sizes):
-    results = []
-    with ProcessPoolExecutor() as executor:
-        futures = [executor.submit(process_row, row, target_name, docking_dir, mol2_path, center_coords, box_sizes) for _, row in batch.iterrows()]
-        
-        for future in tqdm(futures, total=len(futures)):
-            result = future.result()
-            if result is not None:
-                results.append(result)
-
-    return results
-
-def main(input_csv, mol2_path, docking_dir, target_name, center_coords, box_sizes, output_path, batch_size):
+def main(input_csv, mol2_path, docking_dir, target_name, center_coords, box_sizes, output_path):
     input_data = pd.read_csv(input_csv)
     input_data.columns = input_data.columns.str.strip()
+
     results = []
 
-    num_batches = len(input_data) // batch_size + int(len(input_data) % batch_size != 0)
-
-    for i in range(num_batches):
-        batch = input_data[i*batch_size:(i+1)*batch_size]
-        batch_results = process_batch(batch, target_name, docking_dir, mol2_path, center_coords, box_sizes)
-        results.extend(batch_results)
+    for _, row in input_data.iterrows():
+        smiles = row.get('SMILES', None)
+        if smiles is not None:
+            result = process_single_drug(smiles, target_name, docking_dir, mol2_path, center_coords, box_sizes)
+            if result is not None:
+                results.append(result)
 
     if not results:
         print("No successful docking results.")
@@ -142,6 +132,7 @@ def main(input_csv, mol2_path, docking_dir, target_name, center_coords, box_size
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Drug fragmentation, cleanup, and docking script')
+
     parser.add_argument('--input_csv', type=str, required=True, help='Path to input CSV file with SMILES strings')
     parser.add_argument('--mol2_path', type=str, required=True, help='Path to mol2 file')
     parser.add_argument('--docking_dir', type=str, default='dockdir', help='Docking directory name/path')
@@ -149,7 +140,7 @@ if __name__ == "__main__":
     parser.add_argument('--center_coords', type=float, nargs=3, help='Center coordinates for docking box (X Y Z)')
     parser.add_argument('--box_sizes', type=float, nargs=3, help='Box sizes for docking (X Y Z)')
     parser.add_argument('--output_path', type=str, required=True, help='Output path for the results CSV')
-    parser.add_argument('--batch_size', type=int, default=1000, help='Batch size for processing')
 
     args = parser.parse_args()
-    main(args.input_csv, args.mol2_path, args.docking_dir, args.target_name, args.center_coords, args.box_sizes, args.output_path, args.batch_size)
+
+    main(args.input_csv, args.mol2_path, args.docking_dir, args.target_name, args.center_coords, args.box_sizes, args.output_path)
