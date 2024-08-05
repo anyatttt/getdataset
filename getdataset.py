@@ -96,6 +96,9 @@ size_z = {box_sizes[2]}""")
         for future in tqdm(concurrent.futures.as_completed(futures), total=len(futures)):
             try:
                 cleaned_smiles, score = future.result()
+                if cleaned_smiles is None:
+                    logging.warning(f"Docking failed for fragment. Skipping.")
+                    continue
                 if score < best_score:
                     best_score = score
                     best_fragment = cleaned_smiles
