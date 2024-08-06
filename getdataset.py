@@ -9,7 +9,7 @@ import concurrent.futures
 import logging
 
 # Configure logging
-logging.basicConfig(filename='process_log.log', level=logging.ERROR, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(filename='process_log.log', level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 
 def fragment_molecule_recaps(smiles):
     try:
@@ -87,10 +87,10 @@ size_z = {box_sizes[2]}""")
 
     target = load_target(target_name, targets_dir=docking_dir)
 
-    best_score = float('inf')  # Initialize to positive infinity
+    best_score = float('inf')
     best_fragment = None
 
-    num_workers = os.cpu_count()  # Set number of workers to CPU count
+    num_workers = min(os.cpu_count(), 8)  # Use a reasonable number of workers
 
     with concurrent.futures.ProcessPoolExecutor(max_workers=num_workers) as executor:
         futures = [executor.submit(dock_fragment, frag, target, docking_dir, mol2_path, center_coords, box_sizes) for frag in fragments]
@@ -130,7 +130,7 @@ def main(input_csv, mol2_path, docking_dir, target_name, center_coords, box_size
         results = []
 
         with tqdm(total=total_count, desc='Processing') as pbar:
-            with concurrent.futures.ThreadPoolExecutor() as executor:
+            with concurrent.futures.ProcessPoolExecutor() as executor:
                 futures = [executor.submit(process_single_drug, row['SMILES'], target_name, docking_dir, mol2_path, center_coords, box_sizes) for _, row in input_data.iterrows()]
                 
                 for future in tqdm(concurrent.futures.as_completed(futures), total=total_count):
