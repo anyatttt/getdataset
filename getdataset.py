@@ -121,14 +121,13 @@ def process_single_drug(smiles, target_name, docking_dir, mol2_path, center_coor
     
     return None
 
-def main(input_csv, mol2_path, docking_dir, target_name, center_coords, box_sizes, output_path, max_entries=20000):
+def main(input_csv, mol2_path, docking_dir, target_name, center_coords, box_sizes, output_path):
     try:
         input_data = pd.read_csv(input_csv)
         input_data.columns = input_data.columns.str.strip()
 
-        # Limit to max_entries rows
-        if max_entries:
-            input_data = input_data.head(max_entries)
+        # Limit to the first 20,000 rows
+        input_data = input_data.head(20000)
 
         total_count = len(input_data)
         results = []
@@ -163,8 +162,7 @@ if __name__ == "__main__":
     parser.add_argument('--center_coords', type=float, nargs=3, help='Center coordinates for docking box (X Y Z)')
     parser.add_argument('--box_sizes', type=float, nargs=3, help='Box sizes for docking (X Y Z)')
     parser.add_argument('--output_path', type=str, required=True, help='Output path for the results CSV')
-    parser.add_argument('--max_entries', type=int, default=20000, help='Maximum number of entries to process')
 
     args = parser.parse_args()
 
-    main(args.input_csv, args.mol2_path, args.docking_dir, args.target_name, args.center_coords, args.box_sizes, args.output_path, args.max_entries)
+    main(args.input_csv, args.mol2_path, args.docking_dir, args.target_name, args.center_coords, args.box_sizes, args.output_path)
