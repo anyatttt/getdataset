@@ -7,9 +7,10 @@ from dockstring import load_target
 import argparse
 import concurrent.futures
 import logging
+import time
 
 # Configure logging
-logging.basicConfig(filename='process_log.log', level=logging.ERROR, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(filename='process_log.log', level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 
 def fragment_molecule_recaps(smiles):
     try:
@@ -64,6 +65,8 @@ def dock_fragment(frag, target, docking_dir, mol2_path, center_coords, box_sizes
         cleaned_smiles = Chem.MolToSmiles(cleaned_mol)
         score, __ = target.dock(cleaned_smiles)
 
+        logging.debug(f"Docked fragment {frag} with score {score}")
+
         return cleaned_smiles, score
     except Exception as e:
         logging.error(f"Error docking fragment {frag}: {e}")
@@ -74,6 +77,7 @@ def dock_fragments(fragments, target_name, docking_dir, mol2_path, center_coords
 
     convert_command = f"obabel -imol2 {mol2_path} -opdbqt -O {os.path.join(docking_dir, target_name + '_target.pdbqt')} -xr"
     os.system(convert_command)
+    logging.debug(f"Converted {mol2_path} to PDBQT format.")
 
     conf_path = os.path.join(docking_dir, target_name + '_conf.txt')
     with open(conf_path, 'w') as f:
@@ -86,21 +90,22 @@ size_y = {box_sizes[1]}
 size_z = {box_sizes[2]}""")
 
     target = load_target(target_name, targets_dir=docking_dir)
+    logging.debug(f"Loaded target {target_name}.")
 
     best_score = float('inf')  # Initialize to positive infinity
     best_fragment = None
 
-    num_workers = os.cpu_count()  # Set number of workers to CPU count
-
-    with concurrent.futures.ProcessPoolExecutor(max_workers=num_workers) as executor:
+    # Parallel processing of fragment docking
+    with concurrent.futures.ProcessPoolExecutor() as executor:
         futures = [executor.submit(dock_fragment, frag, target, docking_dir, mol2_path, center_coords, box_sizes) for frag in fragments]
 
-        for future in tqdm(concurrent.futures.as_completed(futures), total=len(futures)):
+        for future in tqdm(concurrent.futures.as_completed(futures), total=len(futures), desc="Docking fragments"):
             try:
                 cleaned_smiles, score = future.result()
                 if score < best_score:
                     best_score = score
                     best_fragment = cleaned_smiles
+                logging.debug(f"Processed fragment with score {score}.")
             except Exception as e:
                 logging.error(f"Error in future result: {e}")
 
@@ -126,29 +131,29 @@ def main(input_csv, mol2_path, docking_dir, target_name, center_coords, box_size
         input_data = pd.read_csv(input_csv)
         input_data.columns = input_data.columns.str.strip()
 
-        total_count = len(input_data)
         results = []
+        batch_size = 10
 
-        with tqdm(total=total_count, desc='Processing') as pbar:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=64) as executor:  # Increase thread count
-                futures = [executor.submit(process_single_drug, row['SMILES'], target_name, docking_dir, mol2_path, center_coords, box_sizes) for _, row in input_data.iterrows()]
-                
-                for future in tqdm(concurrent.futures.as_completed(futures), total=total_count):
-                    try:
-                        result = future.result()
-                        if result:
-                            results.append(result)
-                    except Exception as e:
-                        logging.error(f"Error in future result: {e}")
-                    pbar.update(1)
+        for index, row in tqdm(input_data.iterrows(), total=len(input_data), desc="Processing drugs"):
+            smiles = row.get('SMILES', None)
+            if smiles is not None:
+                result = process_single_drug(smiles, target_name, docking_dir, mol2_path, center_coords, box_sizes)
+                if result is not None:
+                    results.append(result)
+            
+            # Save results in batches
+            if (index + 1) % batch_size == 0:
+                results_df = pd.DataFrame(results)
+                results_df.to_csv(output_path, index=False)
+                print(f"Intermediate results saved after {index + 1} drugs.")
+                logging.debug(f"Intermediate results saved after {index + 1} drugs.")
 
-        if not results:
-            print("No successful docking results.")
-            return
-
-        results_df = pd.DataFrame(results)
-        results_df.to_csv(output_path, index=False)
-        print(f"Results saved to {output_path}.")
+        # Save any remaining results after the loop
+        if results:
+            results_df = pd.DataFrame(results)
+            results_df.to_csv(output_path, index=False)
+            print(f"Final results saved to {output_path}.")
+            logging.debug(f"Final results saved to {output_path}.")
     
     except Exception as e:
         logging.error(f"Error in main function: {e}")
