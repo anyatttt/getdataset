@@ -10,7 +10,7 @@ import logging
 from concurrent.futures import TimeoutError
 
 # Configure logging
-logging.basicConfig(filename='process_log.log', level=logging.ERROR, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(filename='process_log.log', level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 
 def fragment_molecule_recaps(smiles):
     try:
@@ -72,7 +72,7 @@ def dock_fragment(frag, target, docking_dir, mol2_path, center_coords, box_sizes
 
 def dock_fragment_with_timeout(frag, target, docking_dir, mol2_path, center_coords, box_sizes, timeout=60):
     try:
-        with concurrent.futures.ProcessPoolExecutor() as executor:
+        with concurrent.futures.ProcessPoolExecutor(max_workers=32) as executor:  # Reduce concurrency to 32
             future = executor.submit(dock_fragment, frag, target, docking_dir, mol2_path, center_coords, box_sizes)
             return future.result(timeout=timeout)
     except TimeoutError:
@@ -104,7 +104,7 @@ size_z = {box_sizes[2]}""")
     best_fragment = None
 
     # Parallel processing of fragment docking
-    with concurrent.futures.ProcessPoolExecutor() as executor:
+    with concurrent.futures.ProcessPoolExecutor(max_workers=32) as executor:  # Reduce concurrency to 32
         futures = [executor.submit(dock_fragment_with_timeout, frag, target, docking_dir, mol2_path, center_coords, box_sizes) for frag in fragments]
 
         for future in tqdm(concurrent.futures.as_completed(futures), total=len(futures), desc="Docking fragments"):
