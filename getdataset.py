@@ -7,6 +7,7 @@ from dockstring import load_target
 import argparse
 import concurrent.futures
 import logging
+from concurrent.futures import TimeoutError
 
 # Configure logging
 logging.basicConfig(filename='process_log.log', level=logging.ERROR, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -55,21 +56,33 @@ def cleanup_molecule_rdkit(smiles):
         logging.error(f"Error during molecule cleanup: {e}")
         return None
 
-def dock_fragment(frag, target, center_coords, box_sizes):
+def dock_fragment(frag, target, docking_dir, mol2_path, center_coords, box_sizes):
     try:
         cleaned_mol = cleanup_molecule_rdkit(frag)
         if cleaned_mol is None:
             return None, float('inf')
 
         cleaned_smiles = Chem.MolToSmiles(cleaned_mol)
-        score, _ = target.dock(cleaned_smiles)
+        score, __ = target.dock(cleaned_smiles)
 
         return cleaned_smiles, score
     except Exception as e:
         logging.error(f"Error docking fragment {frag}: {e}")
         return None, float('inf')
 
-def setup_docking(target_name, docking_dir, mol2_path, center_coords, box_sizes):
+def dock_fragment_with_timeout(frag, target, docking_dir, mol2_path, center_coords, box_sizes, timeout=60):
+    try:
+        with concurrent.futures.ProcessPoolExecutor() as executor:
+            future = executor.submit(dock_fragment, frag, target, docking_dir, mol2_path, center_coords, box_sizes)
+            return future.result(timeout=timeout)
+    except TimeoutError:
+        logging.error(f"Docking fragment {frag} took too long and was terminated.")
+        return None, float('inf')
+    except Exception as e:
+        logging.error(f"Error docking fragment {frag}: {e}")
+        return None, float('inf')
+
+def dock_fragments(fragments, target_name, docking_dir, mol2_path, center_coords, box_sizes):
     os.makedirs(docking_dir, exist_ok=True)
 
     convert_command = f"obabel -imol2 {mol2_path} -opdbqt -O {os.path.join(docking_dir, target_name + '_target.pdbqt')} -xr"
@@ -85,16 +98,14 @@ size_x = {box_sizes[0]}
 size_y = {box_sizes[1]}
 size_z = {box_sizes[2]}""")
 
-    return load_target(target_name, targets_dir=docking_dir)
+    target = load_target(target_name, targets_dir=docking_dir)
 
-def dock_fragments(fragments, target, center_coords, box_sizes):
-    best_score = float('inf')
+    best_score = float('inf')  # Initialize to positive infinity
     best_fragment = None
 
-    num_workers = min(len(fragments), os.cpu_count() * 2)  # Use twice the number of CPU cores
-
-    with concurrent.futures.ProcessPoolExecutor(max_workers=num_workers) as executor:
-        futures = [executor.submit(dock_fragment, frag, target, center_coords, box_sizes) for frag in fragments]
+    # Parallel processing of fragment docking
+    with concurrent.futures.ProcessPoolExecutor() as executor:
+        futures = [executor.submit(dock_fragment_with_timeout, frag, target, docking_dir, mol2_path, center_coords, box_sizes) for frag in fragments]
 
         for future in tqdm(concurrent.futures.as_completed(futures), total=len(futures), desc="Docking fragments"):
             try:
@@ -107,13 +118,13 @@ def dock_fragments(fragments, target, center_coords, box_sizes):
 
     return best_fragment, best_score
 
-def process_single_drug(smiles, target, docking_dir, mol2_path, center_coords, box_sizes):
+def process_single_drug(smiles, target_name, docking_dir, mol2_path, center_coords, box_sizes):
     try:
         fragments = fragment_molecule_recaps(smiles)
         if not fragments:
             return None
 
-        best_fragment, best_score = dock_fragments(fragments, target, center_coords, box_sizes)
+        best_fragment, best_score = dock_fragments(fragments, target_name, docking_dir, mol2_path, center_coords, box_sizes)
         if best_fragment is not None:
             return {'SMILES': smiles, 'BestFragment': best_fragment, 'BestScore': best_score}
 
@@ -128,28 +139,27 @@ def main(input_csv, mol2_path, docking_dir, target_name, center_coords, box_size
         input_data.columns = input_data.columns.str.strip()
 
         results = []
+        batch_size = 10
 
-        target = setup_docking(target_name, docking_dir, mol2_path, center_coords, box_sizes)
-        
-        with tqdm(total=len(input_data), desc="Processing drugs") as pbar:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(input_data), os.cpu_count() * 2)) as executor:
-                futures = [executor.submit(process_single_drug, row['SMILES'], target, docking_dir, mol2_path, center_coords, box_sizes) for _, row in input_data.iterrows()]
-                
-                for future in tqdm(concurrent.futures.as_completed(futures), total=len(futures)):
-                    try:
-                        result = future.result()
-                        if result:
-                            results.append(result)
-                    except Exception as e:
-                        logging.error(f"Error in future result: {e}")
-                    pbar.update(1)
+        for index, row in tqdm(input_data.iterrows(), total=len(input_data), desc="Processing drugs"):
+            smiles = row.get('SMILES', None)
+            if smiles is not None:
+                result = process_single_drug(smiles, target_name, docking_dir, mol2_path, center_coords, box_sizes)
+                if result is not None:
+                    results.append(result)
+            
+            # Save results in batches
+            if (index + 1) % batch_size == 0:
+                results_df = pd.DataFrame(results)
+                results_df.to_csv(output_path, index=False)
+                print(f"Intermediate results saved after {index + 1} drugs.")
+                results = []  # Clear results list to save memory
 
+        # Save any remaining results after the loop
         if results:
             results_df = pd.DataFrame(results)
             results_df.to_csv(output_path, index=False)
-            print(f"Results saved to {output_path}.")
-        else:
-            print("No successful docking results.")
+            print(f"Final results saved to {output_path}.")
     
     except Exception as e:
         logging.error(f"Error in main function: {e}")
