@@ -90,18 +90,19 @@ size_z = {box_sizes[2]}""")
     best_score = float('inf')  # Initialize to positive infinity
     best_fragment = None
 
-    # Parallel processing of fragment docking
     with concurrent.futures.ProcessPoolExecutor() as executor:
         futures = [executor.submit(dock_fragment, frag, target, docking_dir, mol2_path, center_coords, box_sizes) for frag in fragments]
 
-        for future in tqdm(concurrent.futures.as_completed(futures), total=len(futures), desc="Docking fragments"):
-            try:
-                cleaned_smiles, score = future.result()
-                if score < best_score:
-                    best_score = score
-                    best_fragment = cleaned_smiles
-            except Exception as e:
-                logging.error(f"Error in future result: {e}")
+        with tqdm(total=len(futures), desc='Docking Fragments') as pbar:
+            for future in concurrent.futures.as_completed(futures):
+                try:
+                    cleaned_smiles, score = future.result()
+                    if score < best_score:
+                        best_score = score
+                        best_fragment = cleaned_smiles
+                except Exception as e:
+                    logging.error(f"Error in future result: {e}")
+                pbar.update(1)
 
     return best_fragment, best_score
 
@@ -120,32 +121,34 @@ def process_single_drug(smiles, target_name, docking_dir, mol2_path, center_coor
     
     return None
 
-def main(input_csv, mol2_path, docking_dir, target_name, center_coords, box_sizes, output_path):
+def main(input_csv, mol2_path, docking_dir, target_name, center_coords, box_sizes, output_path, max_entries=20000):
     try:
         input_data = pd.read_csv(input_csv)
         input_data.columns = input_data.columns.str.strip()
 
+        # Limit to max_entries rows
+        if max_entries:
+            input_data = input_data.head(max_entries)
+
+        total_count = len(input_data)
         results = []
-        batch_size = 10
 
-        for index, row in tqdm(input_data.iterrows(), total=len(input_data), desc="Processing drugs"):
-            smiles = row.get('SMILES', None)
-            if smiles is not None:
-                result = process_single_drug(smiles, target_name, docking_dir, mol2_path, center_coords, box_sizes)
-                if result is not None:
-                    results.append(result)
-            
-            # Save results in batches
-            if (index + 1) % batch_size == 0:
-                results_df = pd.DataFrame(results)
-                results_df.to_csv(output_path, index=False)
-                print(f"Intermediate results saved after {index + 1} drugs.")
+        with tqdm(total=total_count, desc='Processing Drugs') as pbar:
+            for _, row in input_data.iterrows():
+                smiles = row.get('SMILES', None)
+                if smiles is not None:
+                    result = process_single_drug(smiles, target_name, docking_dir, mol2_path, center_coords, box_sizes)
+                    if result is not None:
+                        results.append(result)
+                pbar.update(1)
 
-        # Save any remaining results after the loop
-        if results:
-            results_df = pd.DataFrame(results)
-            results_df.to_csv(output_path, index=False)
-            print(f"Final results saved to {output_path}.")
+        if not results:
+            print("No successful docking results.")
+            return
+
+        results_df = pd.DataFrame(results)
+        results_df.to_csv(output_path, index=False)
+        print(f"Results saved to {output_path}.")
     
     except Exception as e:
         logging.error(f"Error in main function: {e}")
@@ -160,8 +163,8 @@ if __name__ == "__main__":
     parser.add_argument('--center_coords', type=float, nargs=3, help='Center coordinates for docking box (X Y Z)')
     parser.add_argument('--box_sizes', type=float, nargs=3, help='Box sizes for docking (X Y Z)')
     parser.add_argument('--output_path', type=str, required=True, help='Output path for the results CSV')
+    parser.add_argument('--max_entries', type=int, default=20000, help='Maximum number of entries to process')
 
     args = parser.parse_args()
 
-    main(args.input_csv, args.mol2_path, args.docking_dir, args.target_name, args.center_coords, args.box_sizes, args.output_path)
-
+    main(args.input_csv, args.mol2_path, args.docking_dir, args.target_name, args.center_coords, args.box_sizes, args.output_path, args.max_entries)
