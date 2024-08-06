@@ -90,19 +90,19 @@ size_z = {box_sizes[2]}""")
     best_score = float('inf')  # Initialize to positive infinity
     best_fragment = None
 
-    with concurrent.futures.ProcessPoolExecutor() as executor:
+    num_workers = os.cpu_count()  # Set number of workers to CPU count
+
+    with concurrent.futures.ProcessPoolExecutor(max_workers=num_workers) as executor:
         futures = [executor.submit(dock_fragment, frag, target, docking_dir, mol2_path, center_coords, box_sizes) for frag in fragments]
 
-        with tqdm(total=len(futures), desc='Docking Fragments') as pbar:
-            for future in concurrent.futures.as_completed(futures):
-                try:
-                    cleaned_smiles, score = future.result()
-                    if score < best_score:
-                        best_score = score
-                        best_fragment = cleaned_smiles
-                except Exception as e:
-                    logging.error(f"Error in future result: {e}")
-                pbar.update(1)
+        for future in tqdm(concurrent.futures.as_completed(futures), total=len(futures)):
+            try:
+                cleaned_smiles, score = future.result()
+                if score < best_score:
+                    best_score = score
+                    best_fragment = cleaned_smiles
+            except Exception as e:
+                logging.error(f"Error in future result: {e}")
 
     return best_fragment, best_score
 
@@ -126,20 +126,21 @@ def main(input_csv, mol2_path, docking_dir, target_name, center_coords, box_size
         input_data = pd.read_csv(input_csv)
         input_data.columns = input_data.columns.str.strip()
 
-        # Limit to the first 20,000 rows
-        input_data = input_data.head(20000)
-
         total_count = len(input_data)
         results = []
 
-        with tqdm(total=total_count, desc='Processing Drugs') as pbar:
-            for _, row in input_data.iterrows():
-                smiles = row.get('SMILES', None)
-                if smiles is not None:
-                    result = process_single_drug(smiles, target_name, docking_dir, mol2_path, center_coords, box_sizes)
-                    if result is not None:
-                        results.append(result)
-                pbar.update(1)
+        with tqdm(total=total_count, desc='Processing') as pbar:
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                futures = [executor.submit(process_single_drug, row['SMILES'], target_name, docking_dir, mol2_path, center_coords, box_sizes) for _, row in input_data.iterrows()]
+                
+                for future in tqdm(concurrent.futures.as_completed(futures), total=total_count):
+                    try:
+                        result = future.result()
+                        if result:
+                            results.append(result)
+                    except Exception as e:
+                        logging.error(f"Error in future result: {e}")
+                    pbar.update(1)
 
         if not results:
             print("No successful docking results.")
