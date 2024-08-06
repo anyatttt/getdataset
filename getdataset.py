@@ -90,7 +90,7 @@ size_z = {box_sizes[2]}""")
     best_score = float('inf')  # Initialize to positive infinity
     best_fragment = None
 
-    num_workers = 64  # Utilize all 64 CPU cores
+    num_workers = os.cpu_count()  # Set number of workers to CPU count
 
     with concurrent.futures.ProcessPoolExecutor(max_workers=num_workers) as executor:
         futures = [executor.submit(dock_fragment, frag, target, docking_dir, mol2_path, center_coords, box_sizes) for frag in fragments]
